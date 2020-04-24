@@ -53,6 +53,8 @@ namespace CTF {
   template<typename dtype>
   void MTTKRP(Tensor<dtype> * T, Tensor<dtype> ** mat_list, int mode, bool aux_mode_first);
 
+  template<typename dtype>
+  void Multilinear(Tensor<dtype> * T, Tensor<dtype> ** vec_list,  Tensor<dtype> * w, Bivar_Function<dtype> *f = nullptr);
 }
 
 #endif
