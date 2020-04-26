@@ -146,7 +146,6 @@ namespace CTF {
         }
 
         if (phys_phase[modes[i]] == 1){
-          printf("TTTP phys_phase[modes[i]] == 1 i: %d modes[i]: %d\n", i, modes[i]);
           if (is_vec)
             arrs[i] = (dtype*)T->sr->alloc(T->lens[modes[i]]);
           else
@@ -695,7 +694,6 @@ namespace CTF {
       IASSERT(vec_list[i]->order == 1);
       IASSERT(T->lens[i] == vec_list[i]->lens[0]); // TODO: alignment?
     }
-    
     dtype ** arrs = (dtype**)malloc(sizeof(dtype*)*T->order);
     int * phys_phase = (int*)malloc(T->order*sizeof(int));
     
@@ -713,7 +711,6 @@ namespace CTF {
       T->get_local_pairs(&npair, &pairs, true, false);
     }
 
-
     Tensor<dtype> ** redist_vecs = (Tensor<dtype>**)malloc(sizeof(Tensor<dtype>*) * T->order);
     
     Partition par(T->topo->order, T->topo->lens);
@@ -723,52 +720,57 @@ namespace CTF {
     }
 
     for (int i = 0; i < T->order; i++) {
-      // TODO: handle the case here phys_phase[i] == 1
-      // will have to collect all data on Rank 0?
-      IASSERT(phys_phase[i] != 1);
-      
-      int topo_dim = T->edge_map[i].cdt;
-      Vector<dtype> * v = new Vector<dtype>(vec_list[i]->lens[0], par_idx[topo_dim], par[par_idx], Idx_Partition(), 0, *T->wrld, *T->sr);
-      v->operator[]("i") += vec_list[i]->operator[]("i");
-      arrs[i] = (dtype*)v->data;
-      redist_vecs[i] = v;
-
-
-      int comm_lda = 1;
-      for (int l = 0; l < topo_dim; l++) {
-        comm_lda *= T->topo->dim_comm[l].np;
+      if (phys_phase[i] == 1) {
+        redist_vecs[i] = NULL;
+        if (T->wrld->np == 1){
+          arrs[i] = (dtype*)vec_list[i]->data;
+        } else {
+          arrs[i] = (dtype*)T->sr->alloc(T->lens[i]);
+          vec_list[i]->read_all(arrs[i], true);
+        }
       }
-      CTF_int::CommData cmdt(T->wrld->rank - comm_lda * T->topo->dim_comm[topo_dim].rank, T->topo->dim_comm[topo_dim].rank, T->wrld->cdt);
-      cmdt.bcast(v->data, v->size, T->sr->mdtype(), 0);
+      else {
+        int topo_dim = T->edge_map[i].cdt;
+        Vector<dtype> * v = new Vector<dtype>(vec_list[i]->lens[0], par_idx[topo_dim], par[par_idx], Idx_Partition(), 0, *T->wrld, *T->sr);
+        v->operator[]("i") += vec_list[i]->operator[]("i");
+        arrs[i] = (dtype*)v->data;
+        redist_vecs[i] = v;
+
+        int comm_lda = 1;
+        for (int l = 0; l < topo_dim; l++) {
+          comm_lda *= T->topo->dim_comm[l].np;
+        }
+        CTF_int::CommData cmdt(T->wrld->rank - comm_lda * T->topo->dim_comm[topo_dim].rank, T->topo->dim_comm[topo_dim].rank, T->wrld->cdt);
+        cmdt.bcast(v->data, v->size, T->sr->mdtype(), 0);
+      }
     }
     
     // Do the work
     // create a vector to hold the output (along dimension 'i')
-    // TODO: needs to be modified for the generic case
     int topo_dim = T->edge_map[0].cdt;
-    Vector<dtype> * w_redist = new Vector<dtype>(w->lens[0], par_idx[topo_dim], par[par_idx], Idx_Partition(), 0, *T->wrld, *T->sr, "w_redist");
+    Vector<dtype> * w_redist;
+
+    if (phys_phase[0] == 1) {
+      w_redist = new Vector<dtype>(w->lens[0], 'a'-1, par[par_idx], Idx_Partition(), 0, *T->wrld, *T->sr, "w_redist");
+    }
+    else {    
+      w_redist = new Vector<dtype>(w->lens[0], par_idx[topo_dim], par[par_idx], Idx_Partition(), 0, *T->wrld, *T->sr, "w_redist");
+    }
     dtype *wr_data = (dtype*)w_redist->data;
 
-    // TODO: work can be done efficiently by iterating over npair
-    // TODO: OpenMP
-    int64_t k = 0; 
-    for (int64_t j = 0; j < redist_vecs[1]->size; j++) {
-      for (int64_t i = 0; i < redist_vecs[0]->size; i++) {
-        dtype a_i;
-        dtype b_i;
-        dtype r_i;
-        dtype inter_i;
-        memcpy(&b_i, (void *)&arrs[1][j], sizeof(dtype));
-        memcpy(&a_i, (void *)&arrs[0][i], sizeof(dtype));
-        f->apply_f((char *)&pairs[k].d, (char *)&arrs[1][j], (char *)&inter_i);
-        f->apply_f((char *)&inter_i, (char *)&arrs[0][i], (char *)&r_i);
-        printf("rank: %d multiply: T * v: %d * %d * %d = %d inter_i: %d\n", T->wrld->rank, pairs[k].d, b_i, a_i, r_i, inter_i);
-        wr_data[i] += r_i;
-        k++;
-      }
+    // TODO: handle order > 2
+#ifdef _OPENMP
+    #pragma omp parallel
+#endif
+    for (int64_t i = 0; i < npair; i++) {
+      dtype inter_i;
+      dtype r_i;
+      int64_t dim_1 = (pairs[i].k / T->lens[0]) / phys_phase[1];
+      int64_t dim_0 = (pairs[i].k % T->lens[0]) / phys_phase[0];
+      f->apply_f((char *)&pairs[i].d, (char *)&arrs[1][dim_1], (char *)&inter_i);
+      f->apply_f((char *)&inter_i, (char *)&arrs[0][dim_0], (char *)&r_i);
+      wr_data[dim_0] += r_i;
     }
-    
-    w_redist->print();
     
     int jr = T->edge_map[0].calc_phys_rank(T->topo);
     MPI_Comm cm;
@@ -776,20 +778,27 @@ namespace CTF {
     int cmr;
     MPI_Comm_rank(cm, &cmr);
 
-    if (cmr == 0)
-      MPI_Reduce(MPI_IN_PLACE, wr_data, redist_vecs[0]->size, T->sr->mdtype(), w->sr->addmop(), 0, cm);
-    else {
-      MPI_Reduce(wr_data, NULL, redist_vecs[0]->size, T->sr->mdtype(), w->sr->addmop(), 0, cm);
-      // std::fill(arrs[j], arrs[j]+sz, *((dtype*)T->sr->addid()));
+    int64_t sz;
+    if (redist_vecs[0] == NULL){
+        sz = T->lens[0];
+    } else {
+      sz = redist_vecs[0]->size;
     }
-    w_redist->print();
-
+    if (cmr == 0) {
+      MPI_Reduce(MPI_IN_PLACE, wr_data, sz, T->sr->mdtype(), w->sr->addmop(), 0, cm);
+    }
+    else {
+      MPI_Reduce(wr_data, NULL, sz, T->sr->mdtype(), w->sr->addmop(), 0, cm);
+    }
     w->operator[]("i") += w_redist->operator[]("i");
-    w->print();
-    // TODO: free up space
     w_redist->free_self();
     for (int i = 0; i < T->order; i++) {
-      redist_vecs[i]->free_self();
+      if (redist_vecs[i] != NULL)
+        delete redist_vecs[i];
+      else {
+        if (vec_list[i]->data != (char *)arrs[i])
+          T->sr->dealloc((char *)arrs[i]);
+      }
     }
     free(redist_vecs);
     free(par_idx);
