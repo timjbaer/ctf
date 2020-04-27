@@ -55,6 +55,9 @@ namespace CTF {
 
   template<typename dtype>
   void Multilinear(Tensor<dtype> * T, Tensor<dtype> ** vec_list,  Tensor<dtype> * w, Bivar_Function<dtype> *f = nullptr);
+
+  template<typename dtype, typename dtype_w>
+  void Multilinear1(Tensor<dtype> * T, Tensor<dtype> ** vec_list,  Tensor<dtype_w> * w, std::function<dtype_w(int,int,int)> f);
 }
 
 #endif

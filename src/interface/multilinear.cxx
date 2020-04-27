@@ -808,4 +808,128 @@ namespace CTF {
       T->sr->pair_dealloc((char*)pairs);
     t_multilinear.stop();
   }
+  
+  // w_i = f(T_ij, x_i, y_j)
+  template<typename dtype, typename dtype_w>
+  void Multilinear1(Tensor<dtype> * T, Tensor<dtype> ** vec_list,  Tensor<dtype_w> * w, std::function<dtype_w(int,int,int)> f){ // TODO: template T vs vec_list?
+    Timer t_multilinear("Multilinear");
+    t_multilinear.start();
+
+    IASSERT(T->order == 2); // TODO: for now
+    for (int i = 0; i < T->order; i++) {
+      IASSERT(vec_list[i]->order == 1);
+      IASSERT(T->lens[i] == vec_list[i]->lens[0]); // TODO: alignment?
+    }
+    dtype ** arrs = (dtype**)malloc(sizeof(dtype*)*T->order);
+    int * phys_phase = (int*)malloc(T->order*sizeof(int));
+    
+    for (int i = 0; i < T->order; i++) {
+      phys_phase[i] = T->edge_map[i].calc_phys_phase();
+    }
+    
+    int64_t npair;
+    Pair<dtype> * pairs;
+    if (T->is_sparse) {
+      pairs = (Pair<dtype>*)T->data;
+      npair = T->nnz_loc;
+    } 
+    else {
+      T->get_local_pairs(&npair, &pairs, true, false);
+    }
+
+    Tensor<dtype> ** redist_vecs = (Tensor<dtype>**)malloc(sizeof(Tensor<dtype>*) * T->order);
+    
+    Partition par(T->topo->order, T->topo->lens);
+    char * par_idx = (char*) malloc(sizeof(char) * T->topo->order);
+    for (int i = 0; i < T->topo->order; i++){
+      par_idx[i] = 'a' + i; 
+    }
+
+    for (int i = 0; i < T->order; i++) {
+      if (phys_phase[i] == 1) {
+        redist_vecs[i] = NULL;
+        if (T->wrld->np == 1){
+          arrs[i] = (dtype*)vec_list[i]->data;
+        } else {
+          arrs[i] = (dtype*)T->sr->alloc(T->lens[i]);
+          vec_list[i]->read_all(arrs[i], true);
+        }
+      }
+      else {
+        int topo_dim = T->edge_map[i].cdt;
+        Vector<dtype> * v = new Vector<dtype>(vec_list[i]->lens[0], par_idx[topo_dim], par[par_idx], Idx_Partition(), 0, *T->wrld, *T->sr);
+        v->operator[]("i") += vec_list[i]->operator[]("i");
+        arrs[i] = (dtype*)v->data;
+        redist_vecs[i] = v;
+
+        int comm_lda = 1;
+        for (int l = 0; l < topo_dim; l++) {
+          comm_lda *= T->topo->dim_comm[l].np;
+        }
+        CTF_int::CommData cmdt(T->wrld->rank - comm_lda * T->topo->dim_comm[topo_dim].rank, T->topo->dim_comm[topo_dim].rank, T->wrld->cdt);
+        cmdt.bcast(v->data, v->size, T->sr->mdtype(), 0);
+      }
+    }
+    
+    // Do the work
+    // create a vector to hold the output (along dimension 'i')
+    int topo_dim = T->edge_map[0].cdt;
+    Vector<dtype_w> * w_redist;
+
+    if (phys_phase[0] == 1) {
+      w_redist = new Vector<dtype_w>(w->lens[0], 'a'-1, par[par_idx], Idx_Partition(), 0, *T->wrld, *w->sr, "w_redist"); // TODO: *T->wrld or *w->wrld?
+    }
+    else {    
+      w_redist = new Vector<dtype_w>(w->lens[0], par_idx[topo_dim], par[par_idx], Idx_Partition(), 0, *T->wrld, *w->sr, "w_redist");
+    }
+    dtype_w *wr_data = (dtype_w*)w_redist->data;
+
+    // TODO: handle order > 2
+#ifdef _OPENMP
+    #pragma omp parallel
+#endif
+    for (int64_t i = 0; i < npair; i++) {
+      int64_t dim_1 = (pairs[i].k / T->lens[0]) / phys_phase[1];
+      int64_t dim_0 = (pairs[i].k % T->lens[0]) / phys_phase[0];
+
+      dtype_w res = f(arrs[1][dim_1], pairs[i].d, arrs[0][dim_0]);
+      w->sr->add((char *)&wr_data[dim_0], (char *)&res, (char *)&wr_data[dim_0]); // accumulate
+    }
+
+    int jr = T->edge_map[0].calc_phys_rank(T->topo);
+    MPI_Comm cm;
+    MPI_Comm_split(T->wrld->comm, jr, T->wrld->rank, &cm);
+    int cmr;
+    MPI_Comm_rank(cm, &cmr);
+
+    int64_t sz;
+    if (redist_vecs[0] == NULL){
+        sz = T->lens[0];
+    } else {
+      sz = redist_vecs[0]->size;
+    }
+    if (cmr == 0) {
+      MPI_Reduce(MPI_IN_PLACE, wr_data, sz, w->sr->mdtype(), w->sr->addmop(), 0, cm);
+    }
+    else {
+      MPI_Reduce(wr_data, NULL, sz, w->sr->mdtype(), w->sr->addmop(), 0, cm);
+    }
+    w->operator[]("i") += w_redist->operator[]("i");
+    w_redist->free_self();
+    for (int i = 0; i < T->order; i++) {
+      if (redist_vecs[i] != NULL)
+        delete redist_vecs[i];
+      else {
+        if (vec_list[i]->data != (char *)arrs[i])
+          T->sr->dealloc((char *)arrs[i]);
+      }
+    }
+    free(redist_vecs);
+    free(par_idx);
+    free(phys_phase);
+    free(arrs);
+    if (!T->is_sparse)
+      T->sr->pair_dealloc((char*)pairs);
+    t_multilinear.stop();
+  }
 }
