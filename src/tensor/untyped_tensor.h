@@ -150,7 +150,7 @@ namespace CTF_int {
        * \brief default constructor for untyped instantiation
        */
       tensor();
-  
+
       /** \brief class free self */
       ~tensor();
 
@@ -311,6 +311,7 @@ namespace CTF_int {
        */
       int set(char const * val);
 
+
       /**
        * \brief sets padded portion of tensor to zero (this should be maintained internally)
        */
@@ -321,7 +322,7 @@ namespace CTF_int {
        * \param[in] sym_mask identifies which tensor indices are part of the symmetric group which diagonals we want to scale (i.e. sym_mask [1,1] does A["ii"]= (1./2.)*A["ii"])
        */
       void scale_diagonals(int const * sym_mask);
- 
+
       /**
        * \brief sets to zero elements which are diagonal with respect to index diag and diag+1
        * \param[in] diag smaller index of the symmetry to zero out
@@ -371,6 +372,16 @@ namespace CTF_int {
        * \param[out] size number of elements in data
        */
       void get_raw_data(char ** data, int64_t * size) const;
+      
+      /**
+       * \brief query mapping to processor grid and intra-processor blocking, which may be used to define a tensor with the same initial distribution
+       * \param[out] idx array of this->order chars describing this processor modes mapping on processor grid dimensions tarting from 'a'
+       * \param[out] prl Idx_Partition obtained from processor grod (topo) on which this tensor is mapped and the indices 'abcd...'
+       * \param[out] prl Idx_Partition obtained from virtual blocking of this tensor
+       */
+      void get_distribution(char **              idx,
+                            CTF::Idx_Partition & prl,
+                            CTF::Idx_Partition & blk);
 
       /**
        * \brief  Add tensor data new=alpha*new+beta*old
@@ -616,11 +627,38 @@ namespace CTF_int {
        */
       int reshape(tensor const * old_tsr, char const * alpha, char const * beta);
 
+
       /**
-       * brief copy A into this (B). Realloc if necessary
-       * param[in] A tensor to copy
+       * \brief selects best mapping for this tensor based on estimates of overhead
+       * \param[in] restricted binary array of size this->order, indicating if mapping along a mode should be preserved
+       * \param[out] btopo best topology
+       * \param[out] bmemuse memory usage needed with btopo topology
        */
-      //int copy(tensor * A);
+      int choose_best_mapping(int const * restricted, int & btopo, int64_t & bmemuse);
+
+      /**
+       * \brief (for internal use) merges group of mapped (distrubted over processors) modes of the tensor, returns copy of the tensor represented as a lower order tensor with same data and different distribution
+       * \param[in] first_mode mode to start merging from
+       * \param[in] num_modes number of modes to merge
+       * \return new_tensor newly allocated tensor with same data as this tensor but different edge lengths and mapping
+       */
+      tensor * unmap_mapped_modes(int first_mode, int num_modes);
+
+      /**
+       * \brief merges modes of a tensor, e.g. matricization, is a special case of and is automatically invoked from reshape() when applicable
+       * \param[in] input tensor whose modes we are merging, edge lengths of this tensor must be partial products of subsequences of lengths in input
+       * \param[in] alpha scalar to muliplty data in input by
+       * \param[in] beta scalar to muliplty data already in this tensor by before adding scaling input
+       */
+      int merge_modes(tensor * input, char const * alpha, char const * beta);
+
+      /**
+       * \brief splits modes of a tensor, e.g. dematricization, is a special case of and is automatically invoked from reshape() when applicable
+       * \param[in] input tensor whose modes we are splitting, edge lengths of input tensor must be partial products of subsequences of lengths in this tensor
+       * \param[in] alpha scalar to muliplty data in input by
+       * \param[in] beta scalar to muliplty data already in this tensor by before adding scaling input
+       */
+      int split_modes(tensor * input, char const * alpha, char const * beta);
 
       /**
        * \brief align mapping of this tensor to that of B
@@ -731,8 +769,9 @@ namespace CTF_int {
        * \brief undo the folding of a local tensor block
        *        unsets is_folded and deletes rec_tsr
        * \param[in] was_mod true if data was modified, controls whether to discard sparse data
+       * \param[in] can_leave_data_dirty true if data is about to be discarded, so e.g., need not tranpose it back
        */
-      void unfold(bool was_mod=0);
+      void unfold(bool was_mod=0, bool can_leave_data_dirty=0);
 
       /**
        * \brief removes folding without doing transpose
@@ -988,6 +1027,42 @@ namespace CTF_int {
                            int         order_C=0,
                            int const * idx_C=NULL,
                            int **      new_idx_C=NULL);
+
+      /**
+       * \brief checks if there is any symmetry defined as part of sym
+       * \return true if sym[i] != NS for some i
+       */
+      bool has_symmetry() const;
+
+
+      /**
+       * \brief combines unmapped modes
+       * \param[in] mode index of mode from which to start merging
+       * \param[in] num_modes mode from which to start merging
+       * \return tensor alias of this tensor
+       */
+      tensor * combine_unmapped_modes(int mode, int num_modes);
+
+      /**
+       * \brief splits unmapped modes
+       * \param[in] mode index of mode to split
+       * \param[in] num_modes number of modes to create
+       * \param[in] split_lens dimensions of new modes
+       * \return tensor alias of this tensor
+       */
+      tensor * split_unmapped_mode(int mode, int num_modes, int64_t const * split_lens);
+
+      /**
+       * \brief splits dense nonsymmetric tensor into list of tensors of one order lower, which are distributed over a subworld and point to the data stored inside this tensor via aliasing
+       * \return list of tensors as described above
+       */
+      std::vector<tensor*> partition_last_mode_implicit();
+
+      /**
+       * \brief return alias to tensor with no lengths of size 1
+       * \return tensor with same data point as this one but no edge lengths of size 1
+       */
+      tensor * get_no_unit_len_alias();
   };
 }
 #endif// __UNTYPED_TENSOR_H__

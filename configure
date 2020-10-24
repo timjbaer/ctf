@@ -457,6 +457,21 @@ function defaultflags
             PASS_TO_LINKER='-Wl,'
             ;;
     esac
+
+    case $compiler in
+        intel)
+            if [ "x$SEQCXX"    = "x" ]; then SEQCXX='icpc'; fi
+            ;;
+        gnu )
+            if [ "x$SEQCXX"    = "x" ]; then SEQCXX='g++'; fi
+            ;;
+        clang)
+            if [ "x$SEQCXX"    = "x" ]; then SEQCXX='clang++'; fi
+            ;;
+        *)
+            if [ "x$SEQCXX"    = "x" ]; then SEQCXX=$CXX; fi
+            ;;
+    esac
 }
 
 function check_if_apple
@@ -986,7 +1001,7 @@ if [ $BUILD_SCALAPACK = 1 ]; then
     fi
   fi
   if [ ! -d scalapack ]; then
-    wget http://www.netlib.org/scalapack/scalapack.tgz -O scalapack.tgz;
+    wget http://www.netlib.org/scalapack/scalapack-2.1.0.tgz -O scalapack.tgz;
     mkdir scalapack;
     tar -xzf scalapack.tgz -C scalapack --strip-components 1;
   fi
@@ -1106,7 +1121,7 @@ if [ $BUILD_HPTT = 1 ]; then
     mv hptt-master hptt;
   fi
   cd hptt;
-  CXX=$CXX make
+  CXX=$SEQCXX make
   LIB_PATH="$LIB_PATH -L$BUILDDIR/hptt/lib"
   LD_LIB_PATH="$LD_LIB_PATH -L$BUILDDIR/hptt/lib"
   INCLUDES="$INCLUDES -I$BUILDDIR/hptt/include"
@@ -1362,7 +1377,7 @@ for mod in mods:
             mod[0],
             [mod[1]],
             language="c++",
-            include_dirs=[numpy.get_include(),"$BUILDDIR/include","."],
+            include_dirs=[numpy.get_include(),"$BUILDDIR/include","."]+"$INCLUDES".replace("-I","").split(),
             libraries="-lctf $LD_LIBS".replace('-l','').replace('$BDYNAMIC','').split(),
             extra_compile_args="$CXXFLAGS $CORRFLAGS".split(),
             extra_link_args="-L$BUILDDIR/lib_shared $CXXFLAGS $LD_LIB_PATH $LINKFLAGS $LDFLAGS".split()

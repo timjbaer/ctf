@@ -4,6 +4,9 @@
 #include "world.h"
 #include "idx_tensor.h"
 #include "../tensor/untyped_tensor.h"
+#ifdef _OPENMP
+#include "omp.h"
+#endif
 
 namespace CTF_int {
   int64_t proc_bytes_available();
@@ -657,7 +660,7 @@ namespace CTF {
                                     dtype           beta,
                                     int64_t const * inds,
                                     dtype const *   data) {
-    int ret, j;
+    int ret;
     int64_t i;
     char * cpairs = sr->pair_alloc(npair);
     Pair< dtype > * pairs =(Pair< dtype >*)cpairs;
@@ -668,7 +671,7 @@ namespace CTF {
     for (i=0; i<npair; i++){
       int64_t k = 0;
       int64_t lda = 1;
-      for (j=0; j<this->order; j++){
+      for (int j=0; j<this->order; j++){
         k += inds[i*this->order+j] * lda;
         lda *= this->lens[j];
       }
@@ -684,7 +687,7 @@ namespace CTF {
   void Tensor<dtype>::write_aos_idx(int64_t         npair,
                                     int64_t const * inds,
                                     dtype const *   data) {
-    int ret, j;
+    int ret;
     int64_t i;
     char * cpairs = sr->pair_alloc(npair);
     Pair< dtype > * pairs =(Pair< dtype >*)cpairs;
@@ -695,7 +698,7 @@ namespace CTF {
     for (i=0; i<npair; i++){
       int64_t k = 0;
       int64_t lda = 1;
-      for (j=0; j<this->order; j++){
+      for (int j=0; j<this->order; j++){
         k += inds[i*this->order+j] * lda;
         lda *= this->lens[j];
       }
@@ -736,7 +739,7 @@ namespace CTF {
                                     dtype           beta,
                                     int const *     inds,
                                     dtype const *   data) {
-    int64_t i, j;
+    int64_t i;
     int ret;
     char * cpairs = sr->pair_alloc(npair);
     Pair< dtype > * pairs =(Pair< dtype >*)cpairs;
@@ -747,7 +750,7 @@ namespace CTF {
     for (i=0; i<npair; i++){
       int64_t k = 0;
       int64_t lda = 1;
-      for (j=0; j<this->order; j++){
+      for (int j=0; j<this->order; j++){
         k += inds[i*this->order+j] * lda;
         lda *= this->lens[j];
       }
@@ -763,7 +766,7 @@ namespace CTF {
   void Tensor<dtype>::write_aos_idx(int64_t         npair,
                                     int const *     inds,
                                     dtype const *   data) {
-    int ret, i, j;
+    int ret, i;
     char * cpairs = sr->pair_alloc(npair);
     Pair< dtype > * pairs =(Pair< dtype >*)cpairs;
 
@@ -773,7 +776,7 @@ namespace CTF {
     for (i=0; i<npair; i++){
       int64_t k = 0;
       int64_t lda = 1;
-      for (j=0; j<this->order; j++){
+      for (int j=0; j<this->order; j++){
         k += inds[i*this->order+j] * lda;
         lda *= this->lens[j];
       }
@@ -1344,6 +1347,75 @@ NORM1_INST(int64_t)
 NORM1_INST(float)
 NORM1_INST(double)
 
+  template <typename dtype>
+  static double to_dbl(dtype a){
+    return (double)a;
+  }
+
+  template <typename dtype>
+  static double cmplx_to_dbl(dtype a){
+    return (double)std::abs(a);
+  }
+
+  template <typename dtype>
+  static void manual_norm2(Tensor<dtype> & A, double & nrm, std::function<double(dtype)> cond_to_dbl){
+#ifdef _OPENMP
+    double * nrm_parts = (double*)malloc(sizeof(double)*omp_get_max_threads());
+    for (int i=0; i<omp_get_max_threads(); i++){
+      nrm_parts[i] = 0;
+    }
+    #pragma omp parallel
+#endif
+    {
+#ifdef _OPENMP
+      int tid = omp_get_thread_num();
+      int ntd = omp_get_num_threads();
+#else
+      int tid = 0;
+      int ntd = 1;
+#endif
+      int64_t num_el;
+      if (A.is_sparse){
+        num_el = A.nnz_loc;
+      } else {
+        num_el = A.size;
+      }
+      double loc_nrm = 0;
+      int64_t i_st = tid*(num_el/ntd);
+      i_st += std::min((int64_t)tid,num_el%ntd);
+      int64_t i_end = (tid+1)*(num_el/ntd);
+      i_end += std::min((int64_t)(tid+1),num_el%ntd);
+      if (A.is_sparse){
+        CTF_int::ConstPairIterator pi(A.sr, A.data);
+        for (int64_t i=i_st; i<i_end; i++){
+          double val = cond_to_dbl((*((dtype*)(pi[i].d()))));
+          loc_nrm += val*val;
+        }
+      } else {
+        for (int64_t i=i_st; i<i_end; i++){
+          double val = cond_to_dbl(((dtype*)A.data)[i]);
+          loc_nrm += val*val;
+        }
+      }
+#ifdef _OPENMP
+      nrm_parts[tid] = loc_nrm;
+#else
+      nrm = loc_nrm;
+#endif
+    }
+#pragma omp barrier
+#ifdef _OPENMP
+    nrm = 0.;
+    for (int i=0; i<omp_get_max_threads(); i++){
+      nrm += nrm_parts[i];
+    }
+    free(nrm_parts);
+#endif
+    double glb_nrm;
+    MPI_Allreduce(&nrm, &glb_nrm, 1, MPI_DOUBLE, MPI_SUM, A.wrld->comm);
+    nrm = std::sqrt(glb_nrm);
+  }
+
   template<typename dtype>
   static void real_norm2(Tensor<dtype> & A, double & nrm){
     char inds[A.order];
@@ -1397,13 +1469,19 @@ NORM1_INST(double)
 #define NORM2_REAL_INST(dtype) \
   template<> \
   inline void Tensor<dtype>::norm2(double & nrm){ \
-    real_norm2<dtype>(*this, nrm); \
+    if (has_symmetry()) \
+      real_norm2<dtype>(*this, nrm); \
+    else \
+      manual_norm2<dtype>(*this, nrm, &to_dbl<dtype>); \
   }
 
 #define NORM2_COMPLEX_INST(dtype) \
   template<> \
   inline void Tensor< std::complex<dtype> >::norm2(double & nrm){ \
-    complex_norm2< std::complex<dtype> >(*this, nrm); \
+    if (has_symmetry()) \
+      complex_norm2< std::complex<dtype> >(*this, nrm); \
+    else \
+      manual_norm2< std::complex<dtype> >(*this, nrm, &cmplx_to_dbl< std::complex<dtype> >); \
   }
 
 
@@ -1782,8 +1860,123 @@ NORM_INFTY_INST(double)
     Sparse_Tensor<dtype> stsr(indices,this);
     return stsr;
   }
+ 
+  template<typename dtype>
+  std::vector<CTF::Matrix<dtype>*> Tensor<dtype>::to_matrix_batch(){
+    IASSERT(this->order == 3);
+    if (this->order != 3)
+      printf("CTF ERROR: to_matrix_batch() function only valid for order 3 tensors.\n");
+    std::vector<CTF_int::tensor*> subtsrs = this->partition_last_mode_implicit();
+    std::vector<CTF::Matrix<dtype>*> submats;
+    for (int64_t i=0; i<(int64_t)subtsrs.size(); i++){
+      submats.push_back(new CTF::Matrix<dtype>(*subtsrs[i]));
+      delete subtsrs[i];
+    }
+    return submats;
+  }
+ 
+  template<typename dtype>
+  void Tensor<dtype>::reassemble_batch(std::vector<CTF_int::tensor*> subtsrs){
+    for (int64_t i=0; i<(int64_t)subtsrs.size(); i++){
+      sr->copy(this->data + sr->el_size*i*subtsrs[0]->size, subtsrs[i]->data, subtsrs[0]->size);
+    }
+  }
+      
+  template<typename dtype>
+  void Tensor<dtype>::svd_batch(Tensor<dtype> & U, Matrix<dtype> & S, Tensor<dtype> & VT, int rank){
+    int64_t srank = rank == 0 ? std::min(this->lens[0], this->lens[1]) : rank;
+    std::vector<CTF::Matrix<dtype>*> mats = this->to_matrix_batch();
+    int64_t U_lens[3] = {this->lens[0], srank, this->lens[2]};
+    int64_t VT_lens[3] = {srank, this->lens[1], this->lens[2]};
+    IASSERT(this->topo->order <= 3);
+    //get this tensors partition and map tensors accordingly
+    Partition pe_grid(this->topo->order, this->topo->lens);
+    char * pe_grid_inds = new char[this->topo->order];
+    //char * pe_unfolded_grid_inds'
+    //int * pe_unfolded_grid_lens;
+    //bool use_unfold_grid = false;
+    //if (this->topo->order > 1){
+    //  if (this->edge_map[2].type == CTF_int::PHYSICAL_MAP){
+    //    if (this->edge_map[2].cdt == i)
+    //  pe_unfolded_grid_inds = new char[this->topo->order-1];
+    //  pe_unfolded_grid_lens = new int[this->topo->order-1];
+    //  pe_unfolded_grid_lens[0] = 1;
+    //}
+    for (int i=0; i<this->topo->order; i++){
+      if (this->edge_map[0].type == CTF_int::PHYSICAL_MAP &&
+          this->edge_map[0].cdt == i){
+        pe_grid_inds[i] = 'i';
+      } else if (this->edge_map[1].type == CTF_int::PHYSICAL_MAP &&
+                 this->edge_map[1].cdt == i){
+        pe_grid_inds[i] = 'j';
+      } else if (this->edge_map[2].type == CTF_int::PHYSICAL_MAP &&
+                 this->edge_map[2].cdt == i){
+        pe_grid_inds[i] = 'k';
+      }
+    }
+    
+    //need to predefine this way to ensure all tensors are blocked the same way over k, so that their slices live on the same subworlds
+    U = Tensor<dtype>(3,U_lens,NULL,*this->wrld,"ijk",pe_grid[pe_grid_inds],Idx_Partition(),NULL,0,*this->sr);
+    S = Matrix<dtype>(srank,this->lens[2],"jk",pe_grid[pe_grid_inds],Idx_Partition(),0,*this->wrld,*this->sr);
+    VT = Tensor<dtype>(3,VT_lens,NULL,*this->wrld,"jik",pe_grid[pe_grid_inds],Idx_Partition(),NULL,0,*this->sr);
+    std::vector<CTF::Matrix<dtype>*> U_mats = U.to_matrix_batch();
+    std::vector<CTF::Vector<dtype>*> S_vecs = S.to_vector_batch();
+    std::vector<CTF::Matrix<dtype>*> VT_mats = VT.to_matrix_batch();
+    IASSERT(U_mats.size() == mats.size());
+    IASSERT(S_vecs.size() == mats.size());
+    IASSERT(VT_mats.size() == mats.size());
+    std::vector<tensor*> tU_mats;
+    std::vector<tensor*> tS_vecs;
+    std::vector<tensor*> tVT_mats;
+    for (int64_t i=0; i<(int64_t)mats.size(); i++){
+      CTF::Matrix<dtype> Ui;
+      CTF::Vector<dtype> Si;
+      CTF::Matrix<dtype> VTi;
+      //printf("HERE %d %d %d %d\n",mats[i]->edge_map[0].cdt,mats[i]->edge_map[1].cdt,mats[i]->edge_map[0].np,mats[i]->edge_map[1].np);
+      mats[i]->svd(Ui,Si,VTi,rank);
+      //mats[i]->svd_rand(Ui,Si,VTi,rank,10);
+      //CTF::Matrix<dtype> R(*mats[i]);
+      //R["ij"] -= Ui["ik"]*Si["k"]*VTi["kj"];
+      //double nrm = R.norm2();
+      //printf("residual norm is %E\n",nrm);
+      U_mats[i]->operator[]("ij") += Ui["ij"];
+      S_vecs[i]->operator[]("i") += Si["i"];
+      VT_mats[i]->operator[]("ij") += VTi["ij"];
+      tU_mats.push_back((tensor*)U_mats[i]);
+      tS_vecs.push_back((tensor*)S_vecs[i]);
+      tVT_mats.push_back((tensor*)VT_mats[i]);
+    }
+    U.reassemble_batch(tU_mats);
+    S.reassemble_batch(tS_vecs);
+    VT.reassemble_batch(tVT_mats);
+    // need to delete worlds that were allocated when calling partition_last_mode_implicit()
+    if (mats[0]->wrld != this->wrld){
+      MPI_Comm_free(&mats[0]->wrld->comm);
+      delete mats[0]->wrld;
+    }
+    if (U_mats[0]->wrld != this->wrld){
+      MPI_Comm_free(&U_mats[0]->wrld->comm);
+      delete U_mats[0]->wrld;
+    }
+    if (S_vecs[0]->wrld != this->wrld){
+      MPI_Comm_free(&S_vecs[0]->wrld->comm);
+      delete S_vecs[0]->wrld;
+    }
+    if (VT_mats[0]->wrld != this->wrld){
+      MPI_Comm_free(&VT_mats[0]->wrld->comm);
+      delete VT_mats[0]->wrld;
+    }
+    for (int64_t i=0; i<(int64_t)mats.size(); i++){
+      delete mats[i];
+      delete U_mats[i];
+      delete S_vecs[i];
+      delete VT_mats[i];
+    }
+    delete [] pe_grid_inds;
+  }
 
 }
+
 
 
 

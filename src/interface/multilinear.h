@@ -58,6 +58,12 @@ namespace CTF {
 
   template<typename dtype, typename dtype_w>
   void Multilinear1(Tensor<dtype> * T, Tensor<dtype> ** vec_list,  Tensor<dtype_w> * w, std::function<dtype_w(int,int,int)> f);
+  /**
+    * \brief Compute solve for tensor completion type eqns in parallel with input tensor T and list of matrices
+      
+  */
+  template<typename dtype>
+  void Solve_Factor(Tensor<dtype> * T, Tensor<dtype> ** mat_list, Tensor<dtype> * RHS, int mode, bool aux_mode_first);
 }
 
 #endif

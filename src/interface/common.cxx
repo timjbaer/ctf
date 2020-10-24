@@ -571,6 +571,14 @@ namespace CTF_int {
     alltoallv_mdl.observe(tps);
   }
 
+  char * get_default_inds(int order, int start_index){
+    char * inds = (char*)CTF_int::alloc(order*sizeof(char));
+    for (int i=0; i<order; i++){
+      inds[i] = 'a'+i+start_index;
+    }
+    return inds;
+  }
+
   void cvrt_idx(int             order,
                 int64_t const * lens,
                 int64_t         idx,

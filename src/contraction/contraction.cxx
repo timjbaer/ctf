@@ -2721,7 +2721,7 @@ namespace CTF_int {
       need_remap_C = 1;
     if (need_remap_C) {
       est_time += 2.*C->est_redist_time(*dC, nnz_frac_C);
-      mem_redist_tmp += C->get_redist_mem(*dB, nnz_frac_C);
+      mem_redist_tmp += C->get_redist_mem(*dC, nnz_frac_C);
       //mem_redist += (int64_t)(nnz_frac_C*C->size*C->sr->pair_size()) +C->get_redist_mem(*dC, nnz_frac_C);
     }
     assert(mem_fold_tmp >= 0);
@@ -2833,7 +2833,7 @@ namespace CTF_int {
         ASSERT(est_time >= 0.0);
         if ((int64_t)memuse >= max_memuse){
           if (global_comm.rank == 0)
-            DPRINTF(3,"Not enough memory available for topo %d with order %d memory %ld/%ld\n", t,j,memuse,max_memuse);
+            DPRINTF(3,"Not enough memory available for topo %ld with order %d memory %ld/%ld\n", t,j,memuse,max_memuse);
           continue;
         }
         if ((!A->is_sparse && A->size > INT_MAX) ||(!B->is_sparse &&  B->size > INT_MAX) || (!C->is_sparse && C->size > INT_MAX)){
@@ -2952,7 +2952,7 @@ namespace CTF_int {
           best_time = est_time;
           //bmemuse = memuse;
           btopo = old_off+j;
-          DPRINTF(1,"[EXH] Found new best contraction i %d btopo %d old_off %ld j %d memuse = %E, est_time = %E\n",i,btopo,old_off,j,(double)memuse,best_time);
+          DPRINTF(1,"[EXH] Found new best contraction i %d btopo %ld old_off %ld j %d memuse = %E, est_time = %E\n",i,btopo,old_off,j,(double)memuse,best_time);
         } 
       }
     }
@@ -4516,8 +4516,8 @@ namespace CTF_int {
     TAU_FSTOP(post_ctr_func_barrier);
   #endif
     TAU_FSTOP(ctr_func);
-    A->unfold();
-    B->unfold();
+    //A->unfold();
+    //B->unfold();
 
 
     TAU_FSTART(unfold_contraction_output);
@@ -5246,8 +5246,6 @@ namespace CTF_int {
 
     ret = new_ctr.sym_contract();//&ntype, ftsr, felm, alpha, beta);
     if (ret!= SUCCESS) return ret;
-    if (was_home_A) new_ctr.A->unfold();
-    if (was_home_B && A != B) new_ctr.B->unfold();
     if (was_home_C) new_ctr.C->unfold();
 
     if (was_home_C && !new_ctr.C->is_home){
@@ -5285,7 +5283,9 @@ namespace CTF_int {
       new_ctr.C->is_data_aliased = 1;
       delete new_ctr.C;
     }
-    if (new_ctr.A != new_ctr.C){ //ntype.tid_A != ntype.tid_C){
+    if (new_ctr.C != new_ctr.A && was_home_A) new_ctr.A->unfold(0,1);
+    if (new_ctr.C != new_ctr.B && was_home_B && A != B) new_ctr.B->unfold(0,1);
+    if (new_ctr.A != new_ctr.C){
       if (was_home_A && !new_ctr.A->is_home){
         new_ctr.A->has_home = 0;
         new_ctr.A->is_home = 0;
@@ -5315,7 +5315,6 @@ namespace CTF_int {
         delete new_ctr.B;
       }
     }
-
     return SUCCESS;
   #endif
   }

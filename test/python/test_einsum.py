@@ -5,6 +5,7 @@ import numpy
 import ctf
 import os
 import sys
+import numpy.linalg as la
 
 def allclose(a, b):
     return abs(ctf.to_nparray(a) - ctf.to_nparray(b)).sum() <= 1e-5
@@ -122,10 +123,17 @@ class KnowValues(unittest.TestCase):
         c0 = numpy.einsum('ijklm,ijn->', a0, b0)
         c1 = ctf.einsum('ijklm,ijn->', a1, b1)
         self.assertTrue(allclose(c0, c1))
+        c1 = ctf.einsum('ijklm,ijn->', a1, b0)
+        self.assertTrue(allclose(c0, c1))
+        c1 = ctf.einsum('ijklm,ijn->', a0, b1)
+        self.assertTrue(allclose(c0, c1))
+        c0 = numpy.einsum('ijklm,->ij', a0, 3.)
+        c1 = ctf.einsum('ijklm,->ij', a1, 3.)
+        self.assertTrue(allclose(c0, c1))
 
     def test_MTTKRP_vec(self):
         for N in range(2,5):
-            lens = numpy.random.randint(2, 4, N)
+            lens = numpy.random.randint(3, 4, N)
             A = ctf.tensor(lens)
             A.fill_sp_random(-1.,1.,.5)
             mats = []
@@ -145,7 +153,7 @@ class KnowValues(unittest.TestCase):
     def test_MTTKRP_mat(self):
         k = 9
         for N in range(2,5):
-            lens = numpy.random.randint(2, 4, N)
+            lens = numpy.random.randint(3, 4, N)
             A = ctf.tensor(lens)
             A.fill_sp_random(-1.,1.,.5)
             mats = []
@@ -160,6 +168,39 @@ class KnowValues(unittest.TestCase):
                 ans.i("ijklm"[i]+"r") << ctr
                 ctf.MTTKRP(A, mats, i)
                 self.assertTrue(allclose(ans, mats[i]))
+
+    def test_Solve_Factor_mat(self):
+        R = 10
+        for N in range(3,6):
+            mats = []
+            num = numpy.random.randint(N)
+            lens = numpy.random.randint(10,20,N)
+            for i in range(N):
+                if i !=num:
+                    mats.append(ctf.random.random([lens[i],R]))
+                else:
+                    mats.append(ctf.tensor([lens[i],R]))
+            RHS = ctf.random.random([lens[num],R])
+            A = ctf.tensor(lens,sp=1)
+            A.fill_sp_random(1., 1., 0.5)
+            lst_mat = []
+            T_inds = "".join([chr(ord('a')+i) for i in range(A.ndim)])
+            einstr=""
+            for i in range(N):
+                if i != num:
+                    einstr+=chr(ord('a')+i) + 'r' + ','
+                    lst_mat.append(mats[i].to_nparray())
+                    einstr+=chr(ord('a')+i) + 'z' + ','
+                    lst_mat.append(mats[i].to_nparray())
+            einstr+= T_inds + "->"+chr(ord('a')+num)+'rz'
+            lst_mat.append(A.to_nparray())
+            lhs_np =numpy.einsum(einstr,*lst_mat,optimize=True)
+            rhs_np = RHS.to_nparray()
+            ans = numpy.zeros_like(rhs_np)
+            for i in range(mats[num].shape[0]):
+                ans[i,:] = la.solve(lhs_np[i],rhs_np[i,:])
+            ctf.Solve_Factor(A,mats,RHS,num)
+            self.assertTrue(numpy.allclose(ans, mats[num].to_nparray()))
 
     def test_TTTP_vec(self):
         A = numpy.random.random((4, 3, 5))
@@ -227,4 +268,4 @@ if __name__ == "__main__":
     result = run_tests()
     ctf.MPI_Stop()
     sys.exit(not result)
-
+    

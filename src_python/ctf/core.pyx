@@ -54,12 +54,6 @@ MPI_Initialized(<int*>&is_mpi_init)
 if is_mpi_init == 0:
   MPI_Init(&is_mpi_init, <char***>NULL)
 
-def MPI_Stop():
-    """
-    Kill all working nodes.
-    """
-    MPI_Finalize()
-
 cdef extern from "ctf.hpp" namespace "CTF_int":
     cdef cppclass algstrct:
         char * addid()
@@ -128,6 +122,9 @@ cdef extern from "ctf.hpp" namespace "CTF_int":
         void true_divide[dtype](ctensor * A)
         void pow_helper_int[dtype](ctensor * A, int p)
         int sparsify(char * threshold, int take_abs)
+        void get_distribution(char **,
+                              Idx_Partition &,
+                              Idx_Partition &)
 
     cdef cppclass Term:
         Term * clone();
@@ -169,12 +166,15 @@ cdef extern from "ctf.hpp" namespace "CTF_int":
         Bivar_Transform(function[void(dtype_A,dtype_B,dtype_C&)] f_);
 
 cdef extern from "../ctf_ext.h" namespace "CTF_int":
+    cdef void init_global_world();
+    cdef void delete_global_world();
     cdef int64_t sum_bool_tsr(ctensor *);
     cdef void pow_helper[dtype](ctensor * A, ctensor * B, ctensor * C, char * idx_A, char * idx_B, char * idx_C);
     cdef void abs_helper[dtype](ctensor * A, ctensor * B);
     cdef void helper_floor[dtype](ctensor * A, ctensor * B);
     cdef void helper_ceil[dtype](ctensor * A, ctensor * B);
     cdef void helper_round[dtype](ctensor * A, ctensor * B);
+    cdef void helper_clip[dtype](ctensor * A, ctensor *B, double low, double high)
     cdef void all_helper[dtype](ctensor * A, ctensor * B_bool, char * idx_A, char * idx_B)
     cdef void conj_helper[dtype](ctensor * A, ctensor * B);
     cdef void any_helper[dtype](ctensor * A, ctensor * B_bool, char * idx_A, char * idx_B)
@@ -195,6 +195,8 @@ cdef extern from "../ctf_ext.h" namespace "CTF_int":
     cdef void matrix_svd_cmplx(ctensor * A, ctensor * U, ctensor * S, ctensor * VT, int rank, double threshold)
     cdef void matrix_svd_rand(ctensor * A, ctensor * U, ctensor * S, ctensor * VT, int rank, int iter, int oversmap, ctensor * U_init);
     cdef void matrix_svd_rand_cmplx(ctensor * A, ctensor * U, ctensor * S, ctensor * VT, int rank, int iter, int oversmap, ctensor * U_init);
+    cdef void matrix_svd_batch(ctensor * A, ctensor * U, ctensor * S, ctensor * VT, int rank)
+    cdef void matrix_svd_batch_cmplx(ctensor * A, ctensor * U, ctensor * S, ctensor * VT, int rank)
     cdef void tensor_svd(ctensor * dA, char * idx_A, char * idx_U, char * idx_VT, int rank, double threshold, bool use_svd_rand, int num_iter, int oversamp, ctensor ** USVT)
     cdef void tensor_svd_cmplx(ctensor * dA, char * idx_A, char * idx_U, char * idx_VT, int rank, double threshold, bool use_svd_rand, int num_iter, int oversamp, ctensor ** USVT)
     cdef void matrix_eigh(ctensor * A, ctensor * U, ctensor * D);
@@ -234,6 +236,7 @@ cdef extern from "ctf.hpp" namespace "CTF":
 
     cdef cppclass Tensor[dtype](ctensor):
         Tensor(int, bint, int64_t *, int *)
+        Tensor(int, bint, int64_t *, int *, World &, char *, Idx_Partition &, Idx_Partition &)
         Tensor(bool , ctensor)
         void fill_random(dtype, dtype)
         void fill_sp_random(dtype, dtype, double)
@@ -265,11 +268,58 @@ cdef extern from "ctf.hpp" namespace "CTF":
         contraction(ctensor *, int *, ctensor *, int *, char *, ctensor *, int *, char *, bivar_function *)
         void execute()
 
+    cdef cppclass Partition:
+        Partition(int, int *)
+        Partition()
+
+    cdef cppclass Idx_Partition:
+        Partition part
+        Idx_Partition(Partition &, char *)
+        Idx_Partition()
+
 cdef extern from "ctf.hpp" namespace "CTF":
     cdef void TTTP_ "CTF::TTTP"[dtype](Tensor[dtype] * T, int num_ops, int * modes, Tensor[dtype] ** mat_list, bool aux_mode_first)
     cdef void MTTKRP_ "CTF::MTTKRP"[dtype](Tensor[dtype] * T, Tensor[dtype] ** mat_list, int mode, bool aux_mode_first)
+    cdef void Solve_Factor_ "CTF::Solve_Factor"[dtype](Tensor[dtype] * T, Tensor[dtype] ** mat_list,Tensor[dtype] * RHS, int mode, bool aux_mode_first)
     cdef void initialize_flops_counter_ "CTF::initialize_flops_counter"()
     cdef int64_t get_estimated_flops_ "CTF::get_estimated_flops"()
+
+cdef class partition:
+    cdef Partition * p
+
+    def __cinit__(self, order=None, lens=None):
+        if order is None:
+            order = 0
+        if lens is None:
+            lens = []
+        cdef int * clens
+        clens = int_arr_py_to_c(lens)
+        self.p = new Partition(order, clens)
+
+    def get_idx_partition(self, idx):
+        return idx_partition(self, idx)
+
+    def __dealloc__(self):
+        del self.p
+
+cdef class idx_partition:
+    cdef Idx_Partition * ip
+
+    def __cinit__(self, partition part=None, idx=None):
+        if idx is None:
+            idx = []
+        if part is None:
+            self.ip = new Idx_Partition()
+        else:
+            self.ip = new Idx_Partition(part.p[0], idx.encode())
+
+    def get_idx_partition(self, idx):
+        idx_p = idx_partition()
+        idx_p.ip = new Idx_Partition(self.ip[0].part, idx.encode())
+        return idx_p
+
+    def __dealloc__(self):
+        del self.ip
 
 
 #from enum import Enum
@@ -357,6 +407,15 @@ cdef class comm:
 
     def np(self):
         return self.w.np
+
+init_global_world()
+
+def MPI_Stop():
+    """
+    Kill all working nodes.
+    """
+    delete_global_world()
+    MPI_Finalize()
 
 cdef class term:
     cdef Term * tm
@@ -802,10 +861,10 @@ cdef class tensor:
         Return the transposed tensor with specified order of axes.
 
     write:
-        Helper function on writing a tensor.
+        Helper function for writing data to tensor.
 
-    write_all:
-        Helper function on writing a tensor.
+    __write_all:
+        Function for writing all tensor data when using one processor.
     """
     cdef ctensor * dt
     cdef int order
@@ -884,7 +943,7 @@ cdef class tensor:
 
     property sym:
         """
-        Attribute sym. ?
+        Attribute sym. Specifies symmetry for use for symmetric storage (and causing symmetrization of accumulation expressions to this tensor), sym should be of size order, with each element NS/SY/AS/SH denoting symmetry relationship with the next mode (see also C++ docs and tensor constructor)
         """
         def __get__(self):
             return self.sym
@@ -929,8 +988,31 @@ cdef class tensor:
 
         """
         return self.dtype
+    
+    def get_distribution(self):
+        """
+        tensor.get_distribution()
+        Return processor grid and intra-processor blocking
 
-    def __cinit__(self, lens=None, sp=None, sym=None, dtype=None, order=None, tensor copy=None):
+        Returns
+        -------
+        output: string, idx_partition, idx_partition
+            idx array of this->order chars describing this processor modes mapping on processor grid dimensions tarting from 'a'
+            prl Idx_Partition obtained from processor grod (topo) on which this tensor is mapped and the indices 'abcd...'
+            prl Idx_Partition obtained from virtual blocking of this tensor
+        """
+        cdef char * idx_ = NULL
+        #idx_ = <char*> malloc(self.dt.order*sizeof(char))
+        prl = idx_partition()
+        blk = idx_partition()
+        self.dt.get_distribution(&idx_, prl.ip[0], blk.ip[0])
+        idx = ""
+        for i in range(0,self.dt.order):
+            idx += chr(idx_[i])
+        free(idx_)
+        return idx, prl, blk
+
+    def __cinit__(self, lens=None, sp=None, sym=None, dtype=None, order=None, tensor copy=None, idx=None, idx_partition prl=None, idx_partition blk=None):
         """
         tensor object constructor
 
@@ -953,6 +1035,15 @@ cdef class tensor:
 
         copy: tensor-like
             tensor to copy, including all attributes and data
+
+        idx: char array, optional, default None
+            idx assignment of characters to each dim
+
+        prl: idx_partition object, optional (should be specified if idx is not None), default None
+            mesh processor topology with character labels
+
+        blk: idx_partition object, optional, default None
+            lock blocking with processor labels
         """
         t_ti = timer("pytensor_init")
         t_ti.start()
@@ -1038,7 +1129,33 @@ cdef class tensor:
         clens = int64_t_arr_py_to_c(rlens)
         cdef int * csym
         csym = int_arr_py_to_c(rsym)
-        if copy is None:
+        cdef World * wrld
+        if copy is None and idx is not None:
+            idx = _rev_array(idx)
+            if prl is None:
+                raise ValueError("Specify mesh processor toplogy with character labels")
+            if blk is None:
+                blk=idx_partition()
+            wrld = new World()
+            if self.dtype == np.float64:
+                self.dt = new Tensor[double](self.ndim, sp, clens, csym, wrld[0], idx.encode(), prl.ip[0], blk.ip[0])
+            if self.dtype == np.complex64:
+                self.dt = new Tensor[complex64_t](self.ndim, sp, clens, csym, wrld[0], idx.encode(), prl.ip[0], blk.ip[0])
+            if self.dtype == np.complex128:
+                self.dt = new Tensor[complex128_t](self.ndim, sp, clens, csym, wrld[0], idx.encode(), prl.ip[0], blk.ip[0])
+            if self.dtype == np.bool:
+                self.dt = new Tensor[bool](self.ndim, sp, clens, csym, wrld[0], idx.encode(), prl.ip[0], blk.ip[0])
+            if self.dtype == np.int64:
+                self.dt = new Tensor[int64_t](self.ndim, sp, clens, csym, wrld[0], idx.encode(), prl.ip[0], blk.ip[0])
+            if self.dtype == np.int32:
+                self.dt = new Tensor[int32_t](self.ndim, sp, clens, csym, wrld[0], idx.encode(), prl.ip[0], blk.ip[0])
+            if self.dtype == np.int16:
+                self.dt = new Tensor[int16_t](self.ndim, sp, clens, csym, wrld[0], idx.encode(), prl.ip[0], blk.ip[0])
+            if self.dtype == np.int8:
+                self.dt = new Tensor[int8_t](self.ndim, sp, clens, csym, wrld[0], idx.encode(), prl.ip[0], blk.ip[0])
+            if self.dtype == np.float32:
+                self.dt = new Tensor[float](self.ndim, sp, clens, csym, wrld[0], idx.encode(), prl.ip[0], blk.ip[0])
+        elif copy is None:
             if self.dtype == np.float64:
                 self.dt = new Tensor[double](self.ndim, sp, clens, csym)
             elif self.dtype == np.complex64:
@@ -2104,6 +2221,7 @@ cdef class tensor:
         """
         if self.dt.get_tot_size(False) != 1:
             raise ValueError("item() must be called on array of size 0")
+
         arr = self.read_all()
         return arr.item()
 
@@ -2365,6 +2483,15 @@ cdef class tensor:
         cdef int64_t sz
         sz = self.dt.get_tot_size(not unpack)
         tB = self.dtype.itemsize
+        if self.dt.wrld.np == 1 and self.sp == 0 and np.all(self.sym == SYM.NS):
+            arr_in = arr
+            if arr is None:
+                arr_in = np.zeros(sz, dtype=self.dtype)
+            self.__read_all(arr_in)
+            if arr is None:
+                return arr_in
+            else:
+                return
         cvals = <char*> malloc(sz*tB)
         self.dt.allread(&sz, cvals, unpack)
         cdef cnp.ndarray buf = np.empty(sz, dtype=self.dtype)
@@ -2409,11 +2536,31 @@ cdef class tensor:
         delete_arr(self.dt, cdata)
         return inds, vals
 
-    def write_all(self, arr):
+    def __read_all(self, arr):
         """
-        write_all(arr)
-        Helper function on writing a tensor.
+        __read_all(arr)
+        Helper function for reading data from tensor, works only with one processor with dense nonsymmetric tensor.
         """
+        if self.dt.wrld.np != 1 or self.sp != 0 or not np.all(self.sym == SYM.NS):
+            raise ValueError("CTF PYTHON ERROR: cannot __read_all for this type of tensor")
+        cdef char * cvals
+        cdef int64_t sz
+        sz = self.dt.get_tot_size(False)
+        tB = arr.dtype.itemsize
+        self.dt.get_raw_data(&cvals, &sz)
+        cdef cnp.ndarray buf = np.empty(sz, dtype=self.dtype)
+        odata = buf.data
+        buf.data = cvals
+        arr[:] = buf[:]
+        buf.data = odata
+
+    def __write_all(self, arr):
+        """
+        __write_all(arr)
+        Helper function on writing data in arr to tensor, works only with one processor with dense nonsymmetric tensor.
+        """
+        if self.dt.wrld.np != 1 or self.sp != 0 or not np.all(self.sym == SYM.NS):
+            raise ValueError("CTF PYTHON ERROR: cannot __write_all for this type of tensor")
         cdef char * cvals
         cdef int64_t sz
         sz = self.dt.get_tot_size(False)
@@ -3064,11 +3211,9 @@ cdef class tensor:
         """
         if arr.dtype != self.dtype:
             raise ValueError('CTF PYTHON ERROR: bad dtype')
-        if self.dt.wrld.np == 1:
-            self.write_all(arr)
+        if self.dt.wrld.np == 1 and self.sp == 0 and np.all(self.sym == SYM.NS):
+            self.__write_all(arr)
         elif self.dt.wrld.rank == 0:
-            #self.write(np.arange(0,self.tot_size(),dtype=np.int64),np.asfortranarray(arr).flatten())
-            #self.write(np.arange(0,self.tot_size(),dtype=np.int64),np.asfortranarray(arr).flatten())
             self.write(np.arange(0,self.tot_size(),dtype=np.int64),arr.ravel())
         else:
             self.write([], [])
@@ -5560,19 +5705,27 @@ def einsum(subscripts, *operands, out=None, dtype=None, order='K', casting='safe
                 out_inds += ind
                 out_lens.append(dind_lens[ind])
                 uniq_subs.remove(ind)
+    new_operands = []
+    for i in range(numop):
+        if isinstance(operands[i],tensor):
+            new_operands.append(operands[i])
+        else:
+            new_operands.append(astensor(operands[i]))
     if out is None:
-        out_dtype = _get_np_dtype([x.dtype for x in operands])
+        out_dtype = _get_np_dtype([x.dtype for x in new_operands])
         out_sp = True
         for i in range(numop):
-            if operands[i].sp == False:
-                if operands[i].ndim > 0:
+            if new_operands[i].sp == False:
+                if new_operands[i].ndim > 0:
                     out_sp = False
+        if len(out_inds) == 0:
+            out_sp = False;
         output = tensor(out_lens, sp=out_sp, dtype=out_dtype)
     else:
         output = out
-    operand = operands[0].i(inds[0])
+    operand = new_operands[0].i(inds[0])
     for i in range(1,numop):
-        operand = operand * operands[i].i(inds[i])
+        operand = operand * new_operands[i].i(inds[i])
     out_scale*output.i(out_inds) << operand
     if out is None:
         if len(out_inds) == 0:
@@ -5700,6 +5853,62 @@ def MTTKRP(tensor A, mat_list, mode):
     free(tsrs)
     t_mttkrp.stop()
 
+def Solve_Factor(tensor A, mat_list, tensor R, mode):
+    """
+    Solve_Factor(A, mat_list,R, mode)
+    solves for a factor matrix parallelizing over rows given rhs, sparse tensor and list of factor matrices
+    eg. for mode=0 order 3 tensor Computes LHS = einsum("ijk,jr,jz,kr,kz->irz",T,B,B,C,C) and solves each row with rhs
+    in parallel 
+    
+    Parameters
+    ----------
+    A: tensor_like
+       Input tensor of arbitrary ndim
+
+    mat_list: list of size A.ndim containing matrices that are n_i-by-R where n_i is dimension of ith mode of A
+    and mat_list[mode] will contain the output
+    
+    R: ctf array Right hand side of dimension I_{mode} x R
+
+    mode: integer for mode with 0 indexing
+
+    """
+    t_solve_factor = timer("pySolve_factor")
+    t_solve_factor.start()
+    if len(mat_list) != A.ndim:
+        raise ValueError('CTF PYTHON ERROR: mat_list argument to MTTKRP must be of same length as ndim')
+    k = -1
+    tsrs = <Tensor[double]**>malloc(len(mat_list)*sizeof(ctensor*))
+    #tsr_list = []
+    imode = 0
+    cdef tensor t
+    for i in range(len(mat_list))[::-1]:
+        t = mat_list[i]
+        tsrs[imode] = <Tensor[double]*>t.dt
+        imode += 1
+        if mat_list[i].ndim == 1:
+            if k != -1:
+                raise ValueError('CTF PYTHON ERROR: mat_list must contain only vectors or only matrices')
+            if mat_list[i].shape[0] != A.shape[i]:
+                raise ValueError('CTF PYTHON ERROR: input vector to SOLVE_FACTOR does not match the corresponding tensor dimension')
+            #exp = exp*mat_list[i].i(s[i])
+        else:
+            if mat_list[i].ndim != 2:
+                raise ValueError('CTF PYTHON ERROR: mat_list operands has invalid dimension')
+            if k == -1:
+                k = mat_list[i].shape[1]
+            else:
+                if k != mat_list[i].shape[1]:
+                    raise ValueError('CTF PYTHON ERROR: mat_list second mode lengths of tensor must match')
+    B = tensor(copy=A)
+    RHS = tensor(copy=R)
+    if A.dtype == np.float64:
+        Solve_Factor_[double](<Tensor[double]*>B.dt,tsrs,<Tensor[double]*>RHS.dt,A.ndim-mode-1,1)
+    else:
+        raise ValueError('CTF PYTHON ERROR: Solve_Factor does not support this dtype')
+    free(tsrs)
+    t_solve_factor.stop()
+
 def svd(tensor A, rank=None, threshold=None):
     """
     svd(A, rank=None)
@@ -5806,6 +6015,53 @@ def svd_rand(tensor A, rank, niter=1, oversamp=5, VT_guess=None):
         raise ValueError('CTF PYTHON ERROR: SVD must be called on real or complex single/double precision tensor')
     t_svd.stop()
     return [U, S, VT]
+
+def svd_batch(tensor A, rank=None):
+    """
+    svd(A, rank=None)
+    Compute Single Value Decomposition of matrix A[i,:,:] for each i, so that A[i,j,k] = sum_r U[i,r,j] S[i,r] VT[i,r,k]
+
+    Parameters
+    ----------
+    A: tensor_like
+        Input tensor 3 dimensions.
+
+    rank: int or None, optional
+        Target rank for SVD, default `rank=None`, implying full rank.
+
+    Returns
+    -------
+    U: tensor
+        A unitary CTF tensor with 3 dimensions.
+
+    S: tensor
+        A 2-D tensor with singular values for each SVD.
+
+    VT: tensor
+        A unitary CTF tensor with 3 dimensions.
+    """
+    t_svd = timer("pySVD_batch")
+    t_svd.start()
+    if not isinstance(A,tensor) or A.ndim != 3:
+        raise ValueError('CTF PYTHON ERROR: batch SVD called on invalid tensor, must be CTF order 3 tensor')
+    if rank is None:
+        k = min(A.shape[1],A.shape[2])
+        rank = k
+    else:
+        k = rank
+
+    S = tensor([A.shape[0],k],dtype=A.dtype)
+    U = tensor([A.shape[0],A.shape[1],k],dtype=A.dtype)
+    VT = tensor([A.shape[0],k,A.shape[2]],dtype=A.dtype)
+    if A.dtype == np.float64 or A.dtype == np.float32:
+        matrix_svd_batch(A.dt, VT.dt, S.dt, U.dt, rank)
+    elif A.dtype == np.complex128 or A.dtype == np.complex64:
+        matrix_svd_batch_cmplx(A.dt, VT.dt, S.dt, U.dt, rank)
+    else:
+        raise ValueError('CTF PYTHON ERROR: batch SVD must be called on real or complex single/double precision tensor')
+    t_svd.stop()
+    return [U, S, VT]
+
 
 def qr(tensor A):
     """
@@ -6298,8 +6554,37 @@ def rint(x, out=None):
     else:
         raise ValueError('CTF PYTHON ERROR: Unsupported dtype for rint()')
     return oA
-   
 
+def clip(x, low, high=None, out=None):
+    """
+    clip(x, out=None)
+    Elementwise clip with lower and upper limits
+
+    Parameters
+    ----------
+    x: tensor_like
+        Input tensor.
+
+    Returns
+    -------
+    out: tensor
+        A tensor of same structure and dtype as x with values clipped
+
+    """
+    cdef tensor A = astensor(x)
+    cdef tensor oA = tensor(copy=A)
+    if high is None:
+        high = np.finfo(float).max
+    elif low is None:
+        low = np.finfo(float).min
+    if A.dtype == np.float64:
+        helper_clip[double](<ctensor*>A.dt, <ctensor*>oA.dt, low, high)
+    elif A.dtype == np.float32:
+        helper_clip[float](<ctensor*>A.dt, <ctensor*>oA.dt, low, high)
+    else:
+        raise ValueError('CTF PYTHON ERROR: Unsupported dtype for clip()')
+    return oA
+   
 def _setgetitem_helper(obj, key_init):
     is_everything = 1
     is_contig = 1

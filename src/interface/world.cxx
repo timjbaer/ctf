@@ -26,8 +26,29 @@ namespace CTF_int {
       return this->layout == 'C';
   }
 
+  bool grid_map_wrapper::operator<(grid_map_wrapper const & other) const {
+    if (this->layout == other.layout){
+      if (this->pr == other.pr)
+        if (this->pc != other.pc)
+          return this->pc < other.pc;
+        else {
+          for (int i=0; i<pr*pc; i++){
+            if (this->allranks[i] != other.allranks[i]){
+              return this->allranks[i] < other.allranks[i];
+            }
+          }
+          return false;
+        }
+      else
+        return this->pr < other.pr;
+    } else
+      return this->layout == 'C';
+  }
+
+
   /** \brief index for ScaLAPACK processor grids */
   std::set<grid_wrapper> scalapack_grids;
+  std::set<grid_map_wrapper> scalapack_grid_maps;
 }
 
 namespace CTF {
@@ -111,6 +132,7 @@ namespace CTF {
 
     initialized = 0;
     mem_exit(rank);
+    //if (rank == 0) printf("deleting subworld of size %d, #instances is now %d\n",np,CTF_int::get_num_instances());
     if (get_num_instances() == 0){
       for (std::set<grid_wrapper>::iterator it=scalapack_grids.begin(); it!=scalapack_grids.end(); it++){
         //printf("HERE %d %d %d\n",it->pr,it->pc,it->ctxt);
@@ -118,6 +140,13 @@ namespace CTF {
           CTF_SCALAPACK::cblacs_gridexit(it->ctxt);
       }
       scalapack_grids.clear();
+      for (std::set<grid_map_wrapper>::iterator it=scalapack_grid_maps.begin(); it!=scalapack_grid_maps.end(); it++){
+        //printf("HERE %d %d %d\n",it->pr,it->pc,it->ctxt);
+        delete it->allranks;
+        if (it->ctxt != -1)
+          CTF_SCALAPACK::cblacs_gridexit(it->ctxt);
+      }
+      scalapack_grid_maps.clear();
 #ifdef OFFLOAD
       offload_exit();
 #endif
@@ -158,7 +187,7 @@ namespace CTF {
 
   int World::initialize(int                   argc,
                         const char * const *  argv){
-    char * size, * mem_size, * ppn;
+    char * mem_size, * ppn;
     if (comm == MPI_COMM_WORLD && universe_exists){
       delete phys_topology;
       *this = universe;
@@ -178,6 +207,7 @@ namespace CTF {
         topovec = peel_perm_torus(phys_topology, cdt);
     }
     CTF_int::mem_create();
+    //if (rank == 0) printf("creating subworld of size %d, #instances is now %d\n",np,CTF_int::get_num_instances());
     if (CTF_int::get_num_instances() == 1){
       TAU_FSTART(CTF);
   #ifdef HPM
