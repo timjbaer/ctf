@@ -25,11 +25,12 @@ int multl(int64_t     m,
   Vector<int> X(nd, dw, "X"); 
   Vector<int> Y(nd, dw, "Y"); 
   X.fill_random(1, 25);
-  Y.fill_random(1, 20);
-  Vector<int> W_in(nd, dw, "W");
+  Y["i"] = X["i"];
+  // Y.fill_random(1, 20);
+  Vector<int> W_in(nd, dw, "W_in");
   W_in.fill_random(6, 10);
   Vector<int> res(nd, dw, "res");
-  Vector<int> W(nd, dw, "res");
+  Vector<int> W(nd, dw, "W");
   W["i"] = W_in["i"];
   int64_t lens[2] = {nd, nd};
   int sT = sp_T < 1. ? SP : 0;
@@ -44,9 +45,15 @@ int multl(int64_t     m,
   Bivar_Function<int, int, int> fmv([](int t, int x) {
       return (x * t);
   });
+
+  std::function<int(int, int, int)> f = [](int a, int b, int c) {
+    return (a * b * c);
+  };
+  
   if (test) {
-    Multilinear<int>(&T, vec_list, &W, &fmv);
+    // Multilinear<int>(&T, vec_list, &W, &fmv);
     res["i"] = T["ij"] * X["j"];
+    Multilinear1<int>(&T, vec_list, &W, f);
     int64_t npair;
     Pair<int> * pairs;
     res.get_local_pairs(&npair, &pairs, false, false);
