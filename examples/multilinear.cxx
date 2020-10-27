@@ -39,21 +39,15 @@ int multl(int64_t     m,
     T.fill_sp_random(1, 105, sp_T);
   else
     T.fill_random(1, 105);
-
   Tensor<int> * vec_list[2] = {&Y, &X};
-
-  Bivar_Function<int, int, int> fmv([](int t, int x) {
-      return (x * t);
-  });
 
   std::function<int(int, int, int)> f = [](int a, int b, int c) {
     return (a * b * c);
   };
   
   if (test) {
-    // Multilinear<int>(&T, vec_list, &W, &fmv);
     res["i"] = T["ij"] * X["j"];
-    Multilinear1<int>(&T, vec_list, &W, f);
+    Multilinear<int>(&T, vec_list, &W, f);
     int64_t npair;
     Pair<int> * pairs;
     res.get_local_pairs(&npair, &pairs, false, false);
@@ -69,7 +63,7 @@ int multl(int64_t     m,
     pass = res.norm2() <= 1.E-6;
     if (dw.rank == 0) {
       if (pass)
-        printf("Multilinear test passed T(%lld), sparse: %d\n", nd, (sp_T < 1.));
+        printf("Multilinear test passed T(%ld), sparse: %d\n", nd, (sp_T < 1.));
     }
     Y.sr->dealloc((char *)arr);
     res.sr->pair_dealloc((char *)pairs);
@@ -87,7 +81,7 @@ int multl(int64_t     m,
     multi.begin();
     for (int i = 0; i < niter; i++){
       double start_time = MPI_Wtime();
-      Multilinear<int>(&T, vec_list, &W, &fmv);
+      Multilinear<int>(&T, vec_list, &W, f);
       double end_time = MPI_Wtime();
       double iter_time = end_time-start_time;
       times[i] = iter_time;
@@ -110,7 +104,6 @@ int multl(int64_t     m,
   return pass;
 } 
 
-
 #ifndef TEST_SUITE
 char* getCmdOption(char ** begin,
                    char ** end,
@@ -121,7 +114,6 @@ char* getCmdOption(char ** begin,
   }
   return 0;
 }
-
 
 int main(int argc, char ** argv){
   int rank, np, pass, niter, test, bench; 

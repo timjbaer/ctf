@@ -1000,141 +1000,16 @@ namespace CTF {
   }
 
   // w_i = f(T_ij, x_i, y_j)
-  template<typename dtype>
-  void Multilinear(Tensor<dtype> * T, Tensor<dtype> ** vec_list,  Tensor<dtype> * w, Bivar_Function<dtype> *f){
-    Timer t_multilinear("Multilinear");
-    t_multilinear.start();
-
-    IASSERT(T->order == 2); // TODO: for now
-    for (int i = 0; i < T->order; i++) {
-      IASSERT(vec_list[i]->order == 1);
-      IASSERT(T->lens[i] == vec_list[i]->lens[0]); // TODO: alignment?
-    }
-    dtype ** arrs = (dtype**)malloc(sizeof(dtype*)*T->order);
-    int * phys_phase = (int*)malloc(T->order*sizeof(int));
-    
-    for (int i = 0; i < T->order; i++) {
-      phys_phase[i] = T->edge_map[i].calc_phys_phase();
-    }
-    
-    int64_t npair;
-    Pair<dtype> * pairs;
-    if (T->is_sparse) {
-      pairs = (Pair<dtype>*)T->data;
-      npair = T->nnz_loc;
-    } 
-    else {
-      T->get_local_pairs(&npair, &pairs, true, false);
-    }
-
-    Tensor<dtype> ** redist_vecs = (Tensor<dtype>**)malloc(sizeof(Tensor<dtype>*) * T->order);
-    
-    Partition par(T->topo->order, T->topo->lens);
-    char * par_idx = (char*) malloc(sizeof(char) * T->topo->order);
-    for (int i = 0; i < T->topo->order; i++){
-      par_idx[i] = 'a' + i; 
-    }
-
-    for (int i = 0; i < T->order; i++) {
-      if (phys_phase[i] == 1) {
-        redist_vecs[i] = NULL;
-        if (T->wrld->np == 1){
-          arrs[i] = (dtype*)vec_list[i]->data;
-        } else {
-          arrs[i] = (dtype*)T->sr->alloc(T->lens[i]);
-          vec_list[i]->read_all(arrs[i], true);
-        }
-      }
-      else {
-        int topo_dim = T->edge_map[i].cdt;
-        Vector<dtype> * v = new Vector<dtype>(vec_list[i]->lens[0], par_idx[topo_dim], par[par_idx], Idx_Partition(), 0, *T->wrld, *T->sr);
-        v->operator[]("i") += vec_list[i]->operator[]("i");
-        arrs[i] = (dtype*)v->data;
-        redist_vecs[i] = v;
-
-        int comm_lda = 1;
-        for (int l = 0; l < topo_dim; l++) {
-          comm_lda *= T->topo->dim_comm[l].np;
-        }
-        CTF_int::CommData cmdt(T->wrld->rank - comm_lda * T->topo->dim_comm[topo_dim].rank, T->topo->dim_comm[topo_dim].rank, T->wrld->cdt);
-        cmdt.bcast(v->data, v->size, T->sr->mdtype(), 0);
-      }
-    }
-    
-    // Do the work
-    // create a vector to hold the output (along dimension 'i')
-    int topo_dim = T->edge_map[0].cdt;
-    Vector<dtype> * w_redist;
-
-    if (phys_phase[0] == 1) {
-      w_redist = new Vector<dtype>(w->lens[0], 'a'-1, par[par_idx], Idx_Partition(), 0, *T->wrld, *T->sr, "w_redist");
-    }
-    else {    
-      w_redist = new Vector<dtype>(w->lens[0], par_idx[topo_dim], par[par_idx], Idx_Partition(), 0, *T->wrld, *T->sr, "w_redist");
-    }
-    dtype *wr_data = (dtype*)w_redist->data;
-
-    // TODO: handle order > 2
-#ifdef _OPENMP
-    #pragma omp parallel
-#endif
-    for (int64_t i = 0; i < npair; i++) {
-      dtype inter_i;
-      dtype r_i;
-      int64_t dim_1 = (pairs[i].k / T->lens[0]) / phys_phase[1];
-      int64_t dim_0 = (pairs[i].k % T->lens[0]) / phys_phase[0];
-      f->apply_f((char *)&pairs[i].d, (char *)&arrs[1][dim_1], (char *)&inter_i);
-      f->apply_f((char *)&inter_i, (char *)&arrs[0][dim_0], (char *)&r_i);
-      wr_data[dim_0] += r_i;
-    }
-    
-    int jr = T->edge_map[0].calc_phys_rank(T->topo);
-    MPI_Comm cm;
-    MPI_Comm_split(T->wrld->comm, jr, T->wrld->rank, &cm);
-    int cmr;
-    MPI_Comm_rank(cm, &cmr);
-
-    int64_t sz;
-    if (redist_vecs[0] == NULL){
-        sz = T->lens[0];
-    } else {
-      sz = redist_vecs[0]->size;
-    }
-    if (cmr == 0) {
-      MPI_Reduce(MPI_IN_PLACE, wr_data, sz, T->sr->mdtype(), w->sr->addmop(), 0, cm);
-    }
-    else {
-      MPI_Reduce(wr_data, NULL, sz, T->sr->mdtype(), w->sr->addmop(), 0, cm);
-    }
-    w->operator[]("i") += w_redist->operator[]("i");
-    w_redist->free_self();
-    for (int i = 0; i < T->order; i++) {
-      if (redist_vecs[i] != NULL)
-        delete redist_vecs[i];
-      else {
-        if (vec_list[i]->data != (char *)arrs[i])
-          T->sr->dealloc((char *)arrs[i]);
-      }
-    }
-    free(redist_vecs);
-    free(par_idx);
-    free(phys_phase);
-    free(arrs);
-    if (!T->is_sparse)
-      T->sr->pair_dealloc((char*)pairs);
-    t_multilinear.stop();
-  }
-  
-  // w_i = f(T_ij, x_i, y_j)
+  // TODO: Template function
   template<typename dtype, typename dtype_w>
-  void Multilinear1(Tensor<dtype> * T, Tensor<dtype> ** vec_list,  Tensor<dtype_w> * w, std::function<dtype_w(int,int,int)> f){ // TODO: template T vs vec_list?
+  void Multilinear(Tensor<dtype> * T, Tensor<dtype> ** vec_list,  Tensor<dtype_w> * w, std::function<dtype_w(int,int,int)> f){
     Timer t_multilinear("Multilinear");
     t_multilinear.start();
 
-    IASSERT(T->order == 2); // TODO: for now
+    IASSERT(T->order == 2); // TODO: handle order > 2 
     for (int i = 0; i < T->order; i++) {
       IASSERT(vec_list[i]->order == 1);
-      IASSERT(T->lens[i] == vec_list[i]->lens[0]); // TODO: alignment?
+      IASSERT(T->lens[i] == vec_list[i]->lens[0]);
     }
     dtype ** arrs = (dtype**)malloc(sizeof(dtype*)*T->order);
     int * phys_phase = (int*)malloc(T->order*sizeof(int));
@@ -1208,7 +1083,7 @@ namespace CTF {
         }
         else if (i == 1) {
           if (T->topo->dim_comm[0].np == T->topo->dim_comm[1].np) {
-            // Specific optimization if vec_list[0] == vec_list[1]
+            // FIXME: Specific optimization if vec_list[0] == vec_list[1]
             if (T->topo->dim_comm[0].rank == 0 && T->topo->dim_comm[1].rank == 0) {
               memcpy(v->data, redist_vecs[0]->data, (v->size * sizeof(dtype)));
             }
@@ -1298,8 +1173,14 @@ namespace CTF {
 
     Timer t_work("Multilinear contraction");
     t_work.start();
-    // TODO: handle order > 2
+    // NOTE: Can use omp barrier in the accumulate phase. But our runs show that it does not scale well.
+    // One other option is to just not use OMP for this accumulation loop.
 #ifdef _OPENMP
+    dtype_w * wr_temp_data[omp_get_max_threads()];
+    std::vector<std::vector<bool> > w_write_f(omp_get_max_threads(), std::vector<bool>(w_redist->size, false));
+    for (int64_t i = 0; i < omp_get_max_threads(); i++) {
+      CTF_int::alloc_ptr(w_redist->size * sizeof(dtype_w), (void **)&wr_temp_data[i]);
+    }
     #pragma omp parallel for
 #endif
     for (int64_t i = 0; i < npair; i++) {
@@ -1307,8 +1188,31 @@ namespace CTF {
       int64_t dim_0 = (pairs[i].k % T->lens[0]) / phys_phase[0];
 
       dtype_w res = f(arrs[1][dim_1], pairs[i].d, arrs[0][dim_0]);
+#ifndef _OPENMP
       w->sr->add((char *)&wr_data[dim_0], (char *)&res, (char *)&wr_data[dim_0]); // accumulate
+#else
+      if (w_write_f[omp_get_thread_num()][dim_0] == true) {
+        w->sr->add((char *)&wr_temp_data[omp_get_thread_num()][dim_0], (char *)&res, (char *)&wr_temp_data[omp_get_thread_num()][dim_0]);
+      }
+      else {
+        w->sr->add((char *)&wr_data[dim_0], (char *)&res, (char *)&wr_temp_data[omp_get_thread_num()][dim_0]);
+      }        
+      w_write_f[omp_get_thread_num()][dim_0] = true;
+#endif
     }
+#ifdef _OPENMP
+    #pragma omp parallel for
+    for (int64_t i = 0; i < w_redist->size; i++) {
+      for (int64_t j = 0; j < omp_get_num_threads(); j++) {
+        if (w_write_f[j][i] == true) {
+          w->sr->add((char *)&wr_temp_data[j][i], (char *)&wr_data[i], (char *)&wr_data[i]);
+        }
+      }
+    }
+    for (int64_t i = 0; i < omp_get_max_threads(); i++) {
+      CTF_int::cdealloc(wr_temp_data[i]);
+    }
+#endif
     t_work.stop();
 
     int jr = T->edge_map[0].calc_phys_rank(T->topo);
