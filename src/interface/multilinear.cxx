@@ -1188,13 +1188,13 @@ namespace CTF {
 
       dtype_w res = f(arrs[1][dim_1], pairs[i].d, arrs[0][dim_0]);
 #ifndef _OPENMP
-      w->sr->add((char *)&wr_data[dim_0], (char *)&res, (char *)&wr_data[dim_0]); // accumulate
+      w->sr->add((char *)&res, (char *)&wr_data[dim_0], (char *)&wr_data[dim_0]); // accumulate
 #else
       if (w_write_f[omp_get_thread_num()][dim_0] == true) {
-        w->sr->add((char *)&wr_temp_data[omp_get_thread_num()][dim_0], (char *)&res, (char *)&wr_temp_data[omp_get_thread_num()][dim_0]);
+        w->sr->add((char *)&res, (char *)&wr_temp_data[omp_get_thread_num()][dim_0], (char *)&wr_temp_data[omp_get_thread_num()][dim_0]);
       }
       else {
-        w->sr->add((char *)&wr_data[dim_0], (char *)&res, (char *)&wr_temp_data[omp_get_thread_num()][dim_0]);
+        w->sr->add((char *)&res, (char *)&wr_data[dim_0], (char *)&wr_temp_data[omp_get_thread_num()][dim_0]);
       }        
       w_write_f[omp_get_thread_num()][dim_0] = true;
 #endif
@@ -1204,7 +1204,7 @@ namespace CTF {
     for (int64_t i = 0; i < w_redist->size; i++) {
       for (int64_t j = 0; j < omp_get_num_threads(); j++) {
         if (w_write_f[j][i] == true) {
-          w->sr->add((char *)&wr_temp_data[j][i], (char *)&wr_data[i], (char *)&wr_data[i]);
+          w->sr->add((char *)&wr_data[i], (char *)&wr_temp_data[j][i], (char *)&wr_data[i]);
         }
       }
     }
